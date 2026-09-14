@@ -14,6 +14,7 @@
 
 use config::SmearCursor;
 use mux::pane::PaneId;
+use std::collections::HashMap;
 use std::time::Instant;
 use wezterm_term::StableRowIndex;
 
@@ -42,6 +43,10 @@ const STOP_DISTANCE_CELLS: f32 = 0.1;
 /// shorter is scaled between `duration_ms` and that, so a jump across the
 /// window does not cover most of its distance in the first frame or two.
 const LONG_MOVE_CELLS: f32 = 25.;
+/// How many rows have to line up at the same offset before a frame counts as a
+/// scroll rather than a coincidence. A split window only scrolls its own rows,
+/// so this cannot demand a majority of the screen.
+const SCROLL_MATCH_ROWS: usize = 4;
 
 /// The area covered by the cursor, in window pixel coordinates
 #[derive(Clone, Copy, PartialEq, Debug)]
@@ -78,6 +83,18 @@ pub struct CursorMotion {
     /// Stable row at the top of the viewport. Changes when the view scrolls,
     /// either because output pushed it or because the user scrolled back.
     pub viewport_top: StableRowIndex,
+    /// How many rows the viewport shows, which caps how far a scroll is allowed
+    /// to drag the smear in from
+    pub viewport_rows: usize,
+    /// Net rows the pane's screen has scrolled by. In a full screen application
+    /// this is the only evidence that the view moved: the alternate screen keeps
+    /// no scrollback, so neither the cursor position nor the stable row indices
+    /// change when something like vim's ctrl-d scrolls the text.
+    pub scrolled_rows: isize,
+    /// How far the visible content was seen to move, for applications that
+    /// repaint rows instead of scrolling and so never move `scrolled_rows`.
+    /// Rows rather than a running total, since it is measured frame to frame.
+    pub content_shift: isize,
     /// Full screen applications move the cursor on purpose, several rows at a
     /// time, and never scroll the scrollback while doing it.
     pub alt_screen: bool,
@@ -93,6 +110,16 @@ pub struct SmearCursorState {
     /// Cursor row and viewport position as of the previous frame
     last_row: Option<StableRowIndex>,
     last_viewport_top: Option<StableRowIndex>,
+    /// The pane's scroll counter as of the previous frame, and which screen it
+    /// was counting for; the two screens keep separate counters, so a switch
+    /// between them has to discard the reading rather than diff across it.
+    last_scrolled_rows: Option<isize>,
+    last_alt_screen: bool,
+    /// A hash per visible row as of the previous frame. Applications that
+    /// repaint rather than scroll - nvcs does exactly this, rewriting each
+    /// changed row in place - leave the scroll counter untouched, so the only
+    /// evidence the view moved is that the content shifted rows.
+    last_line_hashes: Vec<u64>,
     /// How far the cursor itself last moved, in cells. This sets the pace of
     /// the animation. It has to be the cursor's own step rather than how far
     /// the quad still has to go, because the quad's lag is precisely what the
@@ -114,6 +141,9 @@ impl SmearCursorState {
             pane: None,
             last_row: None,
             last_viewport_top: None,
+            last_scrolled_rows: None,
+            last_alt_screen: false,
+            last_line_hashes: Vec::new(),
             pace_cells: 0.,
             travel_dir: (0., 0.),
             last_update: Instant::now(),
@@ -128,7 +158,49 @@ impl SmearCursorState {
         self.pane = None;
         self.last_row = None;
         self.last_viewport_top = None;
+        self.last_scrolled_rows = None;
+        self.last_line_hashes.clear();
         self.animating = false;
+    }
+
+    /// Work out how far the visible content moved since the last frame, given a
+    /// hash per visible row, and remember this frame's hashes for the next call.
+    ///
+    /// This is for applications that repaint rows in place instead of asking the
+    /// terminal to scroll. They leave no scroll to count, so the shift has to be
+    /// recovered from the content: every row that also appeared last frame votes
+    /// for the offset it moved by, and the offset with the most votes wins.
+    pub fn note_line_hashes(&mut self, hashes: Vec<u64>) -> isize {
+        let mut shift = 0isize;
+
+        // Rows are only worth matching if they are distinct: a screen padded out
+        // with blank rows would otherwise vote for every offset at once.
+        let mut previous_rows: HashMap<u64, Vec<usize>> = HashMap::new();
+        for (row, hash) in self.last_line_hashes.iter().enumerate() {
+            previous_rows.entry(*hash).or_default().push(row);
+        }
+
+        let mut votes: HashMap<isize, usize> = HashMap::new();
+        for (row, hash) in hashes.iter().enumerate() {
+            match previous_rows.get(hash) {
+                // Ambiguous content, such as a run of blank lines, says nothing
+                // about where this row came from
+                Some(previous) if previous.len() == 1 => {
+                    let offset = previous[0] as isize - row as isize;
+                    *votes.entry(offset).or_default() += 1;
+                }
+                _ => {}
+            }
+        }
+
+        if let Some((offset, count)) = votes.into_iter().max_by_key(|(_, count)| *count) {
+            if offset != 0 && count >= SCROLL_MATCH_ROWS {
+                shift = offset;
+            }
+        }
+
+        self.last_line_hashes = hashes;
+        shift
     }
 
     /// Switching pane, tab or window moves the cursor somewhere unrelated,
@@ -136,6 +208,7 @@ impl SmearCursorState {
     pub fn note_pane(&mut self, pane_id: PaneId) {
         if self.pane.replace(pane_id) != Some(pane_id) {
             self.target = None;
+            self.last_line_hashes.clear();
             self.animating = false;
         }
     }
@@ -175,7 +248,43 @@ impl SmearCursorState {
         let view_scrolled = previous_top != Some(motion.viewport_top);
         let output_burst = !config.smear_output && !motion.alt_screen && pushed_by_output;
 
-        if view_scrolled && !pushed_by_output {
+        // How far the text moved under the cursor this frame, in rows, once a
+        // full screen application is scrolling it deliberately. Capped at a
+        // screenful so that jumping to the end of a long file drags the smear
+        // in from the edge of the window rather than from thousands of rows away.
+        // The two screens count separately, so a switch between them discards
+        // the previous reading instead of diffing across it.
+        let same_screen = self.last_alt_screen == motion.alt_screen;
+        self.last_alt_screen = motion.alt_screen;
+        let previous_scrolled = self.last_scrolled_rows.replace(motion.scrolled_rows);
+        let scrolled_rows = match (motion.alt_screen && config.smear_scroll, previous_scrolled) {
+            (true, Some(previous)) if same_screen => {
+                // Prefer what the terminal actually scrolled; only fall back to
+                // the content having moved, so that an application which does
+                // both is not counted twice.
+                let counted = motion.scrolled_rows - previous;
+                let rows = if counted != 0 {
+                    counted
+                } else {
+                    motion.content_shift
+                };
+                let limit = motion.viewport_rows as f32;
+                (rows as f32).clamp(-limit, limit)
+            }
+            _ => 0.,
+        };
+
+        if scrolled_rows != 0. {
+            // Carry the smear along with the text it was sitting on. The cursor
+            // itself often keeps the same screen row through a scroll - vim's
+            // ctrl-d is exactly that - so anchoring to the content is what
+            // turns "the cursor moved half a page through the buffer" into a
+            // movement there is something to draw.
+            let shift = scrolled_rows * cell_size.1;
+            for corner in self.corners.iter_mut() {
+                corner.1 -= shift;
+            }
+        } else if view_scrolled && !pushed_by_output {
             // The user scrolled the view out from under the cursor
             self.snap(destination, now);
             return None;
@@ -241,6 +350,10 @@ impl SmearCursorState {
         } else {
             step.0.hypot(step.1)
         };
+        // A scroll usually leaves the cursor on the same screen row, so the
+        // rects alone would report no movement at all and leave the pace at
+        // whatever the last keystroke set it to
+        let step = step.max(scrolled_rows.abs());
         if step > 0. {
             self.pace_cells = step;
         }
@@ -351,6 +464,59 @@ impl SmearCursorState {
         self.animating = false;
         self.pace_cells = 0.;
         self.last_update = now;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Rows are stand-ins for hashes of the text on each row
+    fn rows(values: &[u64]) -> Vec<u64> {
+        values.to_vec()
+    }
+
+    #[test]
+    fn content_shift_is_reported_in_rows_moved_up() {
+        let mut state = SmearCursorState::new();
+
+        // Nothing to compare the first frame against
+        assert_eq!(state.note_line_hashes(rows(&[1, 2, 3, 4, 5, 6])), 0);
+        // An unchanged screen has not scrolled
+        assert_eq!(state.note_line_hashes(rows(&[1, 2, 3, 4, 5, 6])), 0);
+
+        // The text moved up two rows, the way ctrl-d scrolls it, and two
+        // fresh rows came in at the bottom
+        assert_eq!(state.note_line_hashes(rows(&[3, 4, 5, 6, 7, 8])), 2);
+        // And back down again
+        assert_eq!(state.note_line_hashes(rows(&[1, 2, 3, 4, 5, 6])), -2);
+    }
+
+    #[test]
+    fn a_rewritten_screen_is_not_a_scroll() {
+        let mut state = SmearCursorState::new();
+        state.note_line_hashes(rows(&[1, 2, 3, 4, 5, 6]));
+        // Nothing in common with the previous frame
+        assert_eq!(state.note_line_hashes(rows(&[7, 8, 9, 10, 11, 12])), 0);
+    }
+
+    #[test]
+    fn blank_rows_do_not_vote() {
+        let mut state = SmearCursorState::new();
+        // A screen that is mostly one repeated row, such as vim's empty
+        // buffer tildes, is ambiguous: every blank matches every other
+        // blank, so it must not be allowed to claim a shift.
+        state.note_line_hashes(rows(&[0, 0, 0, 0, 0, 0, 0, 0]));
+        assert_eq!(state.note_line_hashes(rows(&[0, 0, 0, 0, 0, 0, 0, 0])), 0);
+    }
+
+    #[test]
+    fn a_couple_of_matching_rows_is_not_enough() {
+        let mut state = SmearCursorState::new();
+        state.note_line_hashes(rows(&[1, 2, 3, 4, 5, 6]));
+        // Only two rows line up at a consistent offset, which is below the
+        // threshold and more likely coincidence than a scroll
+        assert_eq!(state.note_line_hashes(rows(&[90, 91, 92, 93, 1, 2])), 0);
     }
 }
 

@@ -1149,6 +1149,33 @@ fn test_scroll_margins() {
     assert_all_contents(&term, file!(), line!(), &["1", "2", "z", "a", "W", "", ""]);
 }
 
+/// The alternate screen keeps no scrollback, so its stable row indices never
+/// advance and a full screen application scrolling the view leaves no trace in
+/// the cursor position either. net_scrolled_rows is what records it.
+#[test]
+fn test_net_scrolled_rows() {
+    let mut term = TestTerm::new(3, 4, 0);
+    assert_eq!(term.net_scrolled_rows(), 0);
+
+    // Switch to the alternate screen, the way a full screen application does
+    term.print("\u{1b}[?1049h");
+    assert!(term.is_alt_screen_active());
+    let before = term.net_scrolled_rows();
+
+    // CSI S, which is how an editor scrolls several lines at once
+    term.print("\u{1b}[2S");
+    assert_eq!(term.net_scrolled_rows() - before, 2);
+
+    // CSI T scrolls the other way
+    term.print("\u{1b}[1T");
+    assert_eq!(term.net_scrolled_rows() - before, 1);
+
+    // A newline on the bottom row scrolls by one as well
+    term.cup(0, 2);
+    term.print("\n");
+    assert_eq!(term.net_scrolled_rows() - before, 2);
+}
+
 #[test]
 fn test_emoji_with_modifier() {
     let waving_hand = "\u{1f44b}";

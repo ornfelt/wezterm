@@ -86,6 +86,15 @@ pub struct SmearCursor {
     #[dynamic(default)]
     pub above_text: bool,
 
+    /// In a full screen application, smear the cursor when the view scrolls
+    /// under it. Commands like vim's ctrl-d move the cursor half a page through
+    /// the buffer while leaving it on the same screen row, so without this
+    /// nothing appears to happen; with it the smear is anchored to the text and
+    /// shows the cursor travelling through it. Never applies to the main
+    /// screen, where `smear_output` governs scrolling output instead.
+    #[dynamic(default = "crate::default_true")]
+    pub smear_scroll: bool,
+
     /// Follow the exact cursor position while the pane is printing. Off by
     /// default, because a command printing a screenful of text walks the cursor
     /// from the end of one line to the start of the next once per frame, and
@@ -110,6 +119,7 @@ impl Default for SmearCursor {
             min_distance_cells: default_min_distance_cells(),
             max_distance_cells: default_max_distance_cells(),
             above_text: false,
+            smear_scroll: true,
             smear_output: false,
         }
     }

@@ -56,6 +56,15 @@ config.smear_cursor = {
 * `above_text` - when `true` the smear is drawn over the text, the way neovide
   does it. When `false`, the default, it is drawn behind the text so that the
   characters it passes over stay readable.
+* `smear_scroll` - in a full screen application, smear the cursor when the view
+  scrolls under it. Defaults to `true`. Commands like vim's `ctrl-d` move the
+  cursor half a page through the buffer but leave it on the same screen row, so
+  the cursor rect does not change and there is nothing for a smear anchored to
+  the screen to chase. With this on the smear is anchored to the text instead,
+  so it shows the cursor travelling through the buffer. A scroll can only drag
+  the smear in from one screenful away, so jumping to the end of a long file
+  does not smear in from thousands of rows off screen. This never applies to the
+  main screen, where `smear_output` governs scrolling output instead.
 * `smear_output` - when `true`, the smear follows the exact cursor position
   while the pane is printing. Defaults to `false`: a command printing a
   screenful of text walks the cursor from the end of one line to the start of

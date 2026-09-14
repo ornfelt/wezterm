@@ -18,12 +18,31 @@ use mux::pane::{PaneId, WithPaneLines};
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::PositionedPane;
 use ordered_float::NotNan;
+use std::collections::hash_map::DefaultHasher;
+use std::hash::{Hash, Hasher};
 use std::time::{Duration, Instant};
 use termwiz::surface::{CursorShape, CursorVisibility};
 use wezterm_dynamic::Value;
 use wezterm_term::color::{ColorAttribute, ColorPalette};
 use wezterm_term::{Line, StableRowIndex};
 use window::color::LinearRgba;
+
+/// Collects a hash of each visible row, so that content moving up or down the
+/// screen can be spotted even when the application repainted the rows rather
+/// than asking the terminal to scroll them.
+struct LineHashes {
+    rows: Vec<u64>,
+}
+
+impl WithPaneLines for LineHashes {
+    fn with_lines_mut(&mut self, _first_row: StableRowIndex, lines: &mut [&mut Line]) {
+        for line in lines.iter() {
+            let mut hasher = DefaultHasher::new();
+            line.as_str().hash(&mut hasher);
+            self.rows.push(hasher.finish());
+        }
+    }
+}
 
 impl crate::TermWindow {
     fn paint_pane_box_model(&mut self, pos: &PositionedPane) -> anyhow::Result<()> {
@@ -663,11 +682,32 @@ impl crate::TermWindow {
             },
         };
 
+        let alt_screen = pos.pane.is_alt_screen_active();
+
+        // Applications that repaint rows in place rather than asking the
+        // terminal to scroll leave the scroll counter untouched, so also work
+        // out whether the content itself moved rows.
+        let content_shift = if alt_screen && smear.smear_scroll {
+            let mut hashes = LineHashes {
+                rows: Vec::with_capacity(dims.viewport_rows),
+            };
+            pos.pane.with_lines_mut(
+                stable_top..stable_top + dims.viewport_rows as StableRowIndex,
+                &mut hashes,
+            );
+            self.smear_cursor.borrow_mut().note_line_hashes(hashes.rows)
+        } else {
+            0
+        };
+
         let motion = CursorMotion {
             rect,
             row: cursor.y,
             viewport_top: stable_top,
-            alt_screen: pos.pane.is_alt_screen_active(),
+            viewport_rows: dims.viewport_rows,
+            scrolled_rows: pos.pane.get_net_scrolled_rows(),
+            content_shift,
+            alt_screen,
         };
 
         let now = Instant::now();

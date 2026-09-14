@@ -509,6 +509,10 @@ impl Pane for LocalPane {
         }
     }
 
+    fn get_net_scrolled_rows(&self) -> isize {
+        self.terminal.lock().net_scrolled_rows()
+    }
+
     fn get_current_working_dir(&self, policy: CachePolicy) -> Option<Url> {
         self.terminal
             .lock()

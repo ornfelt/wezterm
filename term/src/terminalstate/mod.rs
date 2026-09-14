@@ -773,6 +773,13 @@ impl TerminalState {
         self.screen.is_alt_screen_active()
     }
 
+    /// Net rows the active screen has scrolled by. Used to notice that a
+    /// full screen application scrolled the view, which leaves no trace in
+    /// the cursor position or the stable row indices.
+    pub fn net_scrolled_rows(&self) -> isize {
+        self.screen().net_scrolled_rows()
+    }
+
     /// Returns true if the associated application has enabled basic mouse
     /// tracking mode (DEC mode 1000).
     /// This is useful for the hosting GUI application to decide how best

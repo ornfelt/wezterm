@@ -29,6 +29,12 @@ pub struct Screen {
     /// PhysRowIndex and StableRowIndex.
     stable_row_index_offset: usize,
 
+    /// Net rows this screen has scrolled by, counting up for content
+    /// moving up the screen. The alternate screen keeps no scrollback, so
+    /// `stable_row_index_offset` never advances there and this is the only
+    /// trace a full screen application's scrolling leaves behind.
+    net_scrolled_rows: isize,
+
     /// config so we can access Maximum number of lines of scrollback
     config: Arc<dyn TerminalConfiguration>,
 
@@ -84,6 +90,7 @@ impl Screen {
             physical_rows,
             physical_cols,
             stable_row_index_offset: 0,
+            net_scrolled_rows: 0,
             dpi: size.dpi,
             keyboard_stack: vec![],
             saved_cursor: None,
@@ -520,6 +527,12 @@ impl Screen {
     }
 
     #[inline]
+    /// Net rows this screen has scrolled by; see the field for why this
+    /// exists alongside the stable row indices.
+    pub fn net_scrolled_rows(&self) -> isize {
+        self.net_scrolled_rows
+    }
+
     pub fn phys_to_stable_row_index(&self, phys: PhysRowIndex) -> StableRowIndex {
         (phys + self.stable_row_index_offset) as StableRowIndex
     }
@@ -654,6 +667,7 @@ impl Screen {
         let phys_scroll = self.phys_range(scroll_region);
         let num_rows = num_rows.min(phys_scroll.end - phys_scroll.start);
         let scrollback_ok = scroll_region.start == 0 && self.allow_scrollback;
+        self.net_scrolled_rows += num_rows as isize;
         let insert_at_end = scroll_region.end as usize == self.physical_rows;
 
         debug!(
@@ -794,6 +808,7 @@ impl Screen {
         debug!("scroll_down {:?} {}", scroll_region, num_rows);
         let phys_scroll = self.phys_range(scroll_region);
         let num_rows = num_rows.min(phys_scroll.end - phys_scroll.start);
+        self.net_scrolled_rows -= num_rows as isize;
 
         let middle = phys_scroll.end - num_rows;
 

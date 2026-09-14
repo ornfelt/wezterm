@@ -320,6 +320,12 @@ pub trait Pane: Downcast + Send + Sync {
     fn is_mouse_grabbed(&self) -> bool;
     fn is_alt_screen_active(&self) -> bool;
 
+    /// Net rows the pane's active screen has scrolled by. Panes that cannot
+    /// report this return 0, which simply reads as never having scrolled.
+    fn get_net_scrolled_rows(&self) -> isize {
+        0
+    }
+
     fn set_clipboard(&self, _clipboard: &Arc<dyn Clipboard>) {}
     fn set_download_handler(&self, _handler: &Arc<dyn DownloadHandler>) {}
     fn set_config(&self, _config: Arc<dyn TerminalConfiguration>) {}
