@@ -207,6 +207,32 @@ impl<'a> QuadTrait for Quad<'a> {
     }
 }
 
+/// Build the vertices of a solid colored, arbitrarily shaped quadrilateral.
+/// `corners` holds the four corner positions in the order top-left, top-right,
+/// bottom-right, bottom-left, using the same coordinate space as
+/// `QuadTrait::set_position`. Unlike `set_position` the corners need not form
+/// an axis aligned rectangle, which is what lets us stretch a quad into a smear.
+pub fn solid_color_poly(
+    corners: [[f32; 2]; VERTICES_PER_CELL],
+    color: LinearRgba,
+    tex: TextureRect,
+) -> [Vertex; VERTICES_PER_CELL] {
+    let [top_left, top_right, bottom_right, bottom_left] = corners;
+    let mut vert: [Vertex; VERTICES_PER_CELL] = Default::default();
+    {
+        let mut quad = Quad { vert: &mut vert };
+        quad.set_texture(tex);
+        quad.set_is_background();
+        quad.set_fg_color(color);
+        quad.set_hsv(None);
+    }
+    vert[V_TOP_LEFT].position = top_left;
+    vert[V_TOP_RIGHT].position = top_right;
+    vert[V_BOT_LEFT].position = bottom_left;
+    vert[V_BOT_RIGHT].position = bottom_right;
+    vert
+}
+
 pub trait QuadAllocator {
     fn allocate(&mut self) -> anyhow::Result<QuadImpl<'_>>;
     fn extend_with(&mut self, vertices: &[Vertex]);

@@ -1,20 +1,25 @@
-use crate::quad::{HeapQuadAllocator, QuadTrait, TripleLayerQuadAllocator};
+use crate::quad::{
+    solid_color_poly, HeapQuadAllocator, QuadTrait, TripleLayerQuadAllocator,
+    TripleLayerQuadAllocatorTrait,
+};
 use crate::selection::SelectionRange;
 use crate::termwindow::box_model::*;
 use crate::termwindow::render::{
     same_hyperlink, CursorProperties, LineQuadCacheKey, LineQuadCacheValue, LineToEleShapeCacheKey,
     RenderScreenLineParams,
 };
+use crate::termwindow::smearcursor::CursorRect;
 use crate::termwindow::{ScrollHit, UIItem, UIItemType};
 use ::window::bitmaps::TextureRect;
 use ::window::DeadKeyStatus;
 use anyhow::Context;
-use config::VisualBellTarget;
+use config::{DimensionContext, VisualBellTarget};
 use mux::pane::{PaneId, WithPaneLines};
 use mux::renderable::{RenderableDimensions, StableCursorPosition};
 use mux::tab::PositionedPane;
 use ordered_float::NotNan;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+use termwiz::surface::{CursorShape, CursorVisibility};
 use wezterm_dynamic::Value;
 use wezterm_term::color::{ColorAttribute, ColorPalette};
 use wezterm_term::{Line, StableRowIndex};
@@ -576,10 +581,142 @@ impl crate::TermWindow {
             // TODO: render a thingy to jump to prior prompt
         }
         */
+        if pos.is_active {
+            if config.smear_cursor.enabled {
+                let left_pixel_x =
+                    padding_left + border.left.get() as f32 + (pos.left as f32 * cell_width);
+                self.paint_smear_cursor(pos, layers, &cursor, &palette, top_pixel_y, left_pixel_x)
+                    .context("paint_smear_cursor")?;
+            } else {
+                self.smear_cursor.borrow_mut().reset();
+            }
+        }
+
         metrics::histogram!("paint_pane.lines").record(start.elapsed());
         log::trace!("lines elapsed {:?}", start.elapsed());
 
         Ok(())
+    }
+
+    /// Layer 1 is where the text lands, so drawing the smear below it keeps the
+    /// characters it passes over readable, while drawing above it hides them the
+    /// way neovide does.
+    fn paint_smear_cursor(
+        &self,
+        pos: &PositionedPane,
+        layers: &mut TripleLayerQuadAllocator,
+        cursor: &StableCursorPosition,
+        palette: &ColorPalette,
+        top_pixel_y: f32,
+        left_pixel_x: f32,
+    ) -> anyhow::Result<()> {
+        const LAYER_BELOW_TEXT: usize = 0;
+        const LAYER_ABOVE_TEXT: usize = 2;
+
+        let smear = &self.config.smear_cursor;
+        let cell_width = self.render_metrics.cell_size.width as f32;
+        let cell_height = self.render_metrics.cell_size.height as f32;
+
+        self.smear_cursor.borrow_mut().note_pane(pos.pane.pane_id());
+
+        let dims = pos.pane.get_dimensions();
+        let stable_top = self
+            .get_viewport(pos.pane.pane_id())
+            .unwrap_or(dims.physical_top);
+        let line_idx = cursor.y - stable_top;
+
+        let on_screen = cursor.visibility == CursorVisibility::Visible
+            && line_idx >= 0
+            && (line_idx as usize) < dims.viewport_rows
+            && cursor.x < dims.cols;
+        if !on_screen {
+            self.smear_cursor.borrow_mut().reset();
+            return Ok(());
+        }
+
+        let cell_x = left_pixel_x + cursor.x as f32 * cell_width;
+        let cell_y = top_pixel_y + (line_idx as usize + pos.top) as f32 * cell_height;
+        let thickness = self.cursor_thickness_pixels();
+
+        let rect = match self
+            .config
+            .default_cursor_style
+            .effective_shape(cursor.shape)
+        {
+            CursorShape::BlinkingBar | CursorShape::SteadyBar => CursorRect {
+                x: cell_x,
+                y: cell_y,
+                width: thickness,
+                height: cell_height,
+            },
+            CursorShape::BlinkingUnderline | CursorShape::SteadyUnderline => CursorRect {
+                x: cell_x,
+                y: cell_y + cell_height - thickness,
+                width: cell_width,
+                height: thickness,
+            },
+            _ => CursorRect {
+                x: cell_x,
+                y: cell_y,
+                width: cell_width,
+                height: cell_height,
+            },
+        };
+
+        let now = Instant::now();
+        let corners =
+            self.smear_cursor
+                .borrow_mut()
+                .update(smear, rect, (cell_width, cell_height), now);
+
+        if self.smear_cursor.borrow().is_animating() {
+            let interval = Duration::from_secs_f32(1. / self.config.max_fps.max(1) as f32);
+            self.update_next_frame_time(Some(now + interval));
+        }
+
+        let corners = match corners {
+            Some(corners) => corners,
+            None => return Ok(()),
+        };
+
+        let color = smear
+            .color
+            .map(|c| c.to_linear())
+            .unwrap_or_else(|| palette.cursor_bg.to_linear())
+            .mul_alpha(smear.opacity.clamp(0., 1.));
+
+        let left_offset = self.dimensions.pixel_width as f32 / 2.;
+        let top_offset = self.dimensions.pixel_height as f32 / 2.;
+        let gl_state = self.render_state.as_ref().unwrap();
+        let verts = solid_color_poly(
+            corners.map(|(x, y)| [x - left_offset, y - top_offset]),
+            color,
+            gl_state.util_sprites.filled_box.texture_coords(),
+        );
+
+        layers.extend_with(
+            if smear.above_text {
+                LAYER_ABOVE_TEXT
+            } else {
+                LAYER_BELOW_TEXT
+            },
+            &verts,
+        );
+
+        Ok(())
+    }
+
+    /// The width of a bar cursor, or the height of an underline cursor
+    fn cursor_thickness_pixels(&self) -> f32 {
+        let default_thickness = self.render_metrics.underline_height as f32;
+        match &self.config.cursor_thickness {
+            Some(d) => d.evaluate_as_pixels(DimensionContext {
+                dpi: self.fonts.get_dpi() as f32,
+                pixel_max: default_thickness,
+                pixel_cell: self.render_metrics.cell_size.height as f32,
+            }),
+            None => default_thickness,
+        }
     }
 
     pub fn build_pane(&mut self, pos: &PositionedPane) -> anyhow::Result<ComputedElement> {

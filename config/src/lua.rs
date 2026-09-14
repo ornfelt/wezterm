@@ -323,6 +323,10 @@ end
             lua.create_function(add_to_config_reload_watch_list)?,
         )?;
 
+        // Lets a wezterm.lua shared with a stock wezterm build detect that this
+        // binary understands the `smear_cursor` config option; on stock builds the
+        // lookup just yields nil.
+        wezterm_mod.set("has_smear_cursor", true)?;
         wezterm_mod.set("target_triple", crate::wezterm_target_triple())?;
         wezterm_mod.set("version", crate::wezterm_version())?;
         wezterm_mod.set("home_dir", crate::HOME_DIR.to_str())?;

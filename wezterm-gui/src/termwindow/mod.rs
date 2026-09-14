@@ -82,10 +82,12 @@ mod prevcursor;
 pub mod render;
 pub mod resize;
 mod selection;
+mod smearcursor;
 pub mod spawn;
 pub mod webgpu;
 use crate::spawn::SpawnWhere;
 use prevcursor::PrevCursorPos;
+use smearcursor::SmearCursorState;
 
 const ATLAS_SIZE: usize = 128;
 
@@ -405,6 +407,7 @@ pub struct TermWindow {
     window_drag_position: Option<MouseEvent>,
     current_mouse_event: Option<MouseEvent>,
     prev_cursor: PrevCursorPos,
+    smear_cursor: RefCell<SmearCursorState>,
     last_scroll_info: RenderableDimensions,
 
     tab_state: RefCell<HashMap<TabId, TabState>>,
@@ -724,6 +727,7 @@ impl TermWindow {
             current_mouse_event: None,
             current_modifier_and_leds: Default::default(),
             prev_cursor: PrevCursorPos::new(),
+            smear_cursor: RefCell::new(SmearCursorState::new()),
             last_scroll_info: RenderableDimensions::default(),
             tab_state: RefCell::new(HashMap::new()),
             pane_state: RefCell::new(HashMap::new()),
