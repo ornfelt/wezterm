@@ -14,6 +14,13 @@ A neovide style "smear" (or trail) animation for the cursor. When the cursor
 moves, the quad that makes up the cursor is stretched back towards where it came
 from, and the trailing corners then catch up, so the smear closes up again.
 
+Each corner chases the cursor exponentially, covering a fraction of its
+remaining distance per second, rather than running a fixed length animation
+from wherever it started. That is what keeps it smooth when the cursor does not
+stand still - a held down key, or a command writing out a screenful of text -
+because the corners settle at a constant distance behind the cursor instead of
+restarting, and falling further behind, on every step.
+
 It is **disabled by default**; set `enabled = true` to turn it on:
 
 ```lua
@@ -25,15 +32,17 @@ config.smear_cursor = {
 ## Options
 
 * `enabled` - whether to draw the smear at all. Defaults to `false`.
-* `duration_ms` - how long, in milliseconds, the whole animation takes. This is
-  the main speed control: smaller values give a faster, shorter lived smear.
-  Defaults to `130`.
+* `duration_ms` - how long, in milliseconds, a short movement takes to close
+  the smear back up. This is the main speed control: smaller values give a
+  faster, shorter lived smear. Defaults to `130`.
+* `max_duration_ms` - how long, in milliseconds, a movement spanning 25 cells or
+  more is allowed to take. The duration scales with the distance between this
+  and `duration_ms`, so that a long jump does not cross most of the window in
+  the first frame or two the way it would if every movement took `duration_ms`.
+  Defaults to `250`.
 * `trail_size` - how far the trailing corners lag behind the leading ones, in
   the range `0.0` to `1.0`. `0` moves the cursor rigidly with no stretching at
   all; values closer to `1` give a longer smear. Defaults to `0.7`.
-* `easing` - the easing function applied to each corner as it travels. Accepts
-  the same values as [visual_bell](visual_bell.md)'s easing functions. Defaults
-  to `"EaseOut"`.
 * `opacity` - alpha applied to the smear color, in the range `0.0` to `1.0`.
   Defaults to `1.0`.
 * `color` - the color of the smear. Defaults to the cursor color from your
@@ -47,6 +56,17 @@ config.smear_cursor = {
 * `above_text` - when `true` the smear is drawn over the text, the way neovide
   does it. When `false`, the default, it is drawn behind the text so that the
   characters it passes over stay readable.
+* `smear_output` - when `true`, the smear follows the exact cursor position
+  while the pane is printing. Defaults to `false`: a command printing a
+  screenful of text walks the cursor from the end of one line to the start of
+  the next once per frame, and following that horizontal bounce reads as a
+  zigzag rather than as a trail. With the default the smear still follows the
+  output down the screen, so it stays with the text as it scrolls by, but holds
+  its horizontal position until the output stops and then settles across to the
+  real column. Typing and cursor keys smear either way, as does everything a
+  full screen application such as vim or less does, since those drive the
+  cursor deliberately. Scrolling the viewport out from under the cursor never
+  smears.
 
 A longer, more obvious smear:
 

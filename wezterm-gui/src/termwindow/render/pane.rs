@@ -8,7 +8,7 @@ use crate::termwindow::render::{
     same_hyperlink, CursorProperties, LineQuadCacheKey, LineQuadCacheValue, LineToEleShapeCacheKey,
     RenderScreenLineParams,
 };
-use crate::termwindow::smearcursor::CursorRect;
+use crate::termwindow::smearcursor::{CursorMotion, CursorRect};
 use crate::termwindow::{ScrollHit, UIItem, UIItemType};
 use ::window::bitmaps::TextureRect;
 use ::window::DeadKeyStatus;
@@ -663,11 +663,18 @@ impl crate::TermWindow {
             },
         };
 
+        let motion = CursorMotion {
+            rect,
+            row: cursor.y,
+            viewport_top: stable_top,
+            alt_screen: pos.pane.is_alt_screen_active(),
+        };
+
         let now = Instant::now();
         let corners =
             self.smear_cursor
                 .borrow_mut()
-                .update(smear, rect, (cell_width, cell_height), now);
+                .update(smear, motion, (cell_width, cell_height), now);
 
         if self.smear_cursor.borrow().is_animating() {
             let interval = Duration::from_secs_f32(1. / self.config.max_fps.max(1) as f32);
