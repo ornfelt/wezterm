@@ -103,6 +103,8 @@ function Show-Help {
     Write-Warn '  are restarted.'
     Write-Warn '  Building needs Strawberry Perl for the vendored openssl:'
     Write-Warn '    winget install StrawberryPerl.StrawberryPerl'
+    Write-Warn '  On machines whose name contains "devpc", -Build also sets'
+    Write-Warn '    $env:CARGO_HTTP_CHECK_REVOKE = "false"'
 }
 
 if ($Help -or ($HelpTokens -contains $RepoPath)) {
@@ -117,6 +119,10 @@ $StrawberryBinDirs = @(
     'C:\Strawberry\perl\site\bin',
     'C:\Strawberry\perl\bin'
 )
+
+# On devpc machines cargo's certificate revocation check fails, so builds there
+# need CARGO_HTTP_CHECK_REVOKE=false. `-like` is case-insensitive.
+$IsDevPc = [bool]($env:COMPUTERNAME -like '*devpc*')
 
 $RepoPath = [System.IO.Path]::GetFullPath($RepoPath)
 $ExePath = Join-Path $RepoPath 'target\release\wezterm-gui.exe'
@@ -144,6 +150,10 @@ if ($ShowCmd) {
         Write-Host ('Remove-Item "{0}" -Force -ErrorAction SilentlyContinue' -f $LockedExePath)
         Write-Host ('if (Get-Process wezterm-gui -ErrorAction SilentlyContinue | Where-Object {{ $_.Path -eq "{0}" }}) {{ Rename-Item "{0}" "{1}" }}' -f $ExePath, (Split-Path $LockedExePath -Leaf))
         Write-Host ('$env:PATH = "{0};" + $env:PATH' -f ($StrawberryBinDirs -join ';'))
+        if ($IsDevPc) {
+            Write-InfoAlt "# devpc detected ($env:COMPUTERNAME)"
+            Write-Host '$env:CARGO_HTTP_CHECK_REVOKE = "false"'
+        }
         Write-Host ('cargo build --release --manifest-path "{0}\Cargo.toml" -p wezterm-gui -p wezterm' -f $RepoPath)
     }
     if (-not $NoRun) {
@@ -178,6 +188,10 @@ if ($Build) {
     }
 
     $env:PATH = ($StrawberryBinDirs -join ';') + ';' + $env:PATH
+    if ($IsDevPc) {
+        Write-InfoAlt "devpc detected (COMPUTERNAME: $env:COMPUTERNAME); setting CARGO_HTTP_CHECK_REVOKE=false for this build."
+        $env:CARGO_HTTP_CHECK_REVOKE = "false"
+    }
     cargo build --release --manifest-path (Join-Path $RepoPath 'Cargo.toml') -p wezterm-gui -p wezterm
     if ($LASTEXITCODE -ne 0) {
         Write-Err "cargo build failed with exit code $LASTEXITCODE"
