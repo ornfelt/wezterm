@@ -84,6 +84,8 @@ USAGE
     cat <<'USAGE'
   Options are matched case-insensitively.
   If the build fails on missing system libraries, run the checkout's get-deps.
+  On machines whose name contains "devpc", --build also sets
+    CARGO_HTTP_CHECK_REVOKE=false
 USAGE
 }
 
@@ -101,6 +103,15 @@ while [ $# -gt 0 ]; do
         *)          REPO_PATH="$arg"; shift ;;
     esac
 done
+
+# On devpc machines cargo's certificate revocation check fails, so builds there
+# need CARGO_HTTP_CHECK_REVOKE=false. COMPUTERNAME is only set on Windows
+# (Git Bash/MSYS), so fall back to the hostname; matched case-insensitively.
+MACHINE_NAME="${COMPUTERNAME:-${HOSTNAME:-$(hostname 2>/dev/null)}}"
+IS_DEVPC=0
+case "$(printf '%s' "$MACHINE_NAME" | tr '[:upper:]' '[:lower:]')" in
+    *devpc*) IS_DEVPC=1 ;;
+esac
 
 REPO_PATH="$(cd -- "$REPO_PATH" 2>/dev/null && pwd)" || {
     color_err "No such directory: $REPO_PATH"
@@ -121,6 +132,10 @@ if [ "$SHOW_CMD" -eq 1 ]; then
     [ -n "$CWD" ] && origin+=" --cwd $CWD"
     color_info_alt "$origin"
     if [ "$BUILD" -eq 1 ]; then
+        if [ "$IS_DEVPC" -eq 1 ]; then
+            color_info_alt "# devpc detected ($MACHINE_NAME)"
+            printf 'export CARGO_HTTP_CHECK_REVOKE=false\n'
+        fi
         printf 'cargo build --release --manifest-path "%s/Cargo.toml" -p wezterm-gui -p wezterm\n' "$REPO_PATH"
     fi
     printf '"%s"' "$EXE_PATH"
@@ -131,6 +146,10 @@ fi
 
 if [ "$BUILD" -eq 1 ]; then
     color_info "Building release binaries in $REPO_PATH ..."
+    if [ "$IS_DEVPC" -eq 1 ]; then
+        color_info_alt "devpc detected (machine name: $MACHINE_NAME); setting CARGO_HTTP_CHECK_REVOKE=false for this build."
+        export CARGO_HTTP_CHECK_REVOKE=false
+    fi
     if ! cargo build --release --manifest-path "$REPO_PATH/Cargo.toml" -p wezterm-gui -p wezterm; then
         status=$?
         color_err "cargo build failed with exit code $status"
