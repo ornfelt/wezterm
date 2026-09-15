@@ -23,6 +23,10 @@
 #
 # print the equivalent commands instead of running anything:
 # ./run-custom-wezterm.sh --build --show-cmd
+#
+# print this help and exit (help / -h / --help, any casing):
+# ./run-custom-wezterm.sh help
+# ./run-custom-wezterm.sh --help
 
 set -u
 
@@ -46,15 +50,40 @@ color_info()     { printf '\033[0;36m%s\033[0m\n' "$*"; }
 color_info_alt() { printf '\033[0;35m%s\033[0m\n' "$*"; }
 
 usage() {
-    cat <<USAGE
-Usage: $SCRIPT_NAME [path] [options]
+    color_info_alt "$SCRIPT_NAME - run the locally built (custom) wezterm"
+    cat <<'USAGE'
 
-  path, --path <dir>    wezterm checkout to use (default: $SCRIPT_DIR)
+Launches the wezterm built in this checkout without touching the wezterm
+installed under /usr/bin. Both read the same config file, so the only
+difference is the binary.
+USAGE
+    echo
+    color_info 'Usage:'
+    printf '  ./%s [path] [options]\n\n' "$SCRIPT_NAME"
+    color_info 'Options:'
+    printf '  path, --path <dir>    wezterm checkout to build/run; also accepted positionally\n'
+    printf '                        (default: %s)\n' "$SCRIPT_DIR"
+    cat <<'USAGE'
   --build               run cargo build --release before launching
   --config <file>       config file to pass to wezterm
+                        (default: wezterm's own lookup, ~/.wezterm.lua)
   --cwd <dir>           directory the new window starts in
   --show-cmd            print the equivalent commands instead of running them
-  -h, --help            show this help
+  -h, --help, help      show this help
+USAGE
+    echo
+    color_info 'Examples:'
+    printf '  ./%s                        run the custom build\n' "$SCRIPT_NAME"
+    printf '  ./%s --build                build release, then run\n' "$SCRIPT_NAME"
+    printf '  ./%s ~/src/wezterm          use another checkout\n' "$SCRIPT_NAME"
+    printf '  ./%s --cwd ~/Code2          start the new window there\n' "$SCRIPT_NAME"
+    printf '  ./%s --config /tmp/smear-test.lua\n' "$SCRIPT_NAME"
+    printf '  ./%s --build --show-cmd     print, do not execute\n' "$SCRIPT_NAME"
+    echo
+    color_warn 'Notes:'
+    cat <<'USAGE'
+  Options are matched case-insensitively.
+  If the build fails on missing system libraries, run the checkout's get-deps.
 USAGE
 }
 
@@ -67,7 +96,7 @@ while [ $# -gt 0 ]; do
         --config)   CONFIG="$2"; shift 2 ;;
         --cwd)      CWD="$2"; shift 2 ;;
         --show-cmd) SHOW_CMD=1; shift ;;
-        -h|--help)  usage; exit 0 ;;
+        -h|--help|help|/h|/help|/?|-?)  usage; exit 0 ;;
         -*)         color_err "Unknown option: $arg"; usage; exit 1 ;;
         *)          REPO_PATH="$arg"; shift ;;
     esac

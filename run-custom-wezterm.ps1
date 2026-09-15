@@ -25,6 +25,10 @@
 #
 # print the equivalent commands instead of running anything:
 # .\run-custom-wezterm.ps1 -Build -ShowCmd
+#
+# print this help and exit (help / -h / --help, any casing):
+# .\run-custom-wezterm.ps1 help
+# .\run-custom-wezterm.ps1 -Help
 
 param(
     [Parameter(Position = 0)]
@@ -45,7 +49,11 @@ param(
     [string]$Cwd,
 
     # Print the commands this run would execute instead of executing them
-    [switch]$ShowCmd
+    [switch]$ShowCmd,
+
+    # Print usage information and exit
+    [Alias('h')]
+    [switch]$Help
 )
 
 function Write-Ok      ([string]$m) { Write-Host $m -ForegroundColor Green }
@@ -53,6 +61,54 @@ function Write-Err     ([string]$m) { Write-Host $m -ForegroundColor Red }
 function Write-Warn    ([string]$m) { Write-Host $m -ForegroundColor DarkYellow }
 function Write-Info    ([string]$m) { Write-Host $m -ForegroundColor Cyan }
 function Write-InfoAlt ([string]$m) { Write-Host $m -ForegroundColor Magenta }
+
+# `help`, `--help` and friends are not parameter names, so PowerShell binds them
+# as the positional $RepoPath; -Help / -h bind the switch above. `-contains` is
+# case-insensitive, which covers HELP, --Help and so on.
+$HelpTokens = @('help', '-help', '--help', '/help', 'h', '-h', '--h', '/h', '/?', '-?')
+
+function Show-Help {
+    Write-InfoAlt 'run-custom-wezterm.ps1 - run the locally built (custom) wezterm'
+    Write-Host ''
+    Write-Host 'Launches the wezterm built in this checkout without touching the wezterm'
+    Write-Host 'installed under C:\Program Files\WezTerm. Both read the same config file,'
+    Write-Host 'so the only difference is the binary.'
+    Write-Host ''
+    Write-Info 'Usage:'
+    Write-Host '  .\run-custom-wezterm.ps1 [[-Path] <dir>] [-Build] [-NoRun] [-Config <file>] [-Cwd <dir>] [-ShowCmd]'
+    Write-Host ''
+    Write-Info 'Options:'
+    Write-Host '  -Path <dir>       wezterm checkout to build/run; also accepted positionally'
+    Write-Host "                    (default: $PSScriptRoot)"
+    Write-Host '  -Build            run cargo build --release before launching'
+    Write-Host '  -NoRun            build only; do not launch a window afterwards'
+    Write-Host '  -Config <file>    config file to pass to wezterm'
+    Write-Host '                    (default: wezterm''s own lookup, ~\.wezterm.lua)'
+    Write-Host '  -Cwd <dir>        directory the new window should start in'
+    Write-Host '  -ShowCmd          print the equivalent commands instead of running them'
+    Write-Host '  -Help, -h, help   show this help'
+    Write-Host ''
+    Write-Info 'Examples:'
+    Write-Host '  .\run-custom-wezterm.ps1                        run the custom build'
+    Write-Host '  .\run-custom-wezterm.ps1 -Build                 build release, then run'
+    Write-Host '  .\run-custom-wezterm.ps1 -Build -NoRun          rebuild only'
+    Write-Host '  .\run-custom-wezterm.ps1 C:\src\wezterm         use another checkout'
+    Write-Host '  .\run-custom-wezterm.ps1 -Cwd C:\Users\jonas\Code2'
+    Write-Host '  .\run-custom-wezterm.ps1 -Config C:\temp\smear-test.lua'
+    Write-Host '  .\run-custom-wezterm.ps1 -Build -ShowCmd        print, do not execute'
+    Write-Host ''
+    Write-Warn 'Notes:'
+    Write-Warn '  Windows locks a running exe, so -Build renames an in-use wezterm-gui.exe'
+    Write-Warn '  aside to let the link succeed; open windows keep the old build until they'
+    Write-Warn '  are restarted.'
+    Write-Warn '  Building needs Strawberry Perl for the vendored openssl:'
+    Write-Warn '    winget install StrawberryPerl.StrawberryPerl'
+}
+
+if ($Help -or ($HelpTokens -contains $RepoPath)) {
+    Show-Help
+    return
+}
 
 # Strawberry Perl is required to build the vendored openssl on Windows, and it
 # must come ahead of the perl that ships with Git
