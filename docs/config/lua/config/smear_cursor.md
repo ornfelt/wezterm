@@ -101,6 +101,12 @@ config.smear_cursor = {
 The animation is driven at up to [max_fps](max_fps.md) frames per second while
 it is running, and costs nothing when the cursor is at rest.
 
+The smear only runs while the window has focus. An unfocused window is repainted
+only when something it is showing changes, which is not often enough to animate
+against: a smear started then would be left frozen on screen until the next
+repaint came along. The cursor snaps instead, and goes back to smearing when you
+focus the window again.
+
 ## Sharing a config with a stock wezterm
 
 An upstream wezterm rejects config keys it doesn't know about, so a bare

@@ -601,7 +601,14 @@ impl crate::TermWindow {
         }
         */
         if pos.is_active {
-            if config.smear_cursor.enabled {
+            // Animation frames are only scheduled for the focused window, so a
+            // smear started while unfocused would be left frozen on screen: the
+            // only repaints it would get are the ones the pane's own output
+            // happens to trigger, each of which draws a fresh stretched quad
+            // that then sits there until the next one arrives. Skip it while
+            // unfocused - the reset also means refocusing snaps the cursor
+            // rather than smearing in from wherever it was last seen.
+            if config.smear_cursor.enabled && self.focused.is_some() {
                 let left_pixel_x =
                     padding_left + border.left.get() as f32 + (pos.left as f32 * cell_width);
                 self.paint_smear_cursor(pos, layers, &cursor, &palette, top_pixel_y, left_pixel_x)
