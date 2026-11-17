@@ -1168,11 +1168,13 @@ fn run() -> anyhow::Result<()> {
     // Inform the system of our AppUserModelID.
     // Without this, our toast notifications won't be correctly
     // attributed to our application.
+    // Fork: a distinct ID so the taskbar doesn't group this build with an
+    // installed upstream wezterm (which would also borrow its icon).
     #[cfg(windows)]
     {
         unsafe {
             ::windows::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID(
-                ::windows::core::PCWSTR(wide_string("org.wezfurlong.wezterm").as_ptr()),
+                ::windows::core::PCWSTR(wide_string("org.wezfurlong.wezterm.fork").as_ptr()),
             )
             .unwrap();
         }
