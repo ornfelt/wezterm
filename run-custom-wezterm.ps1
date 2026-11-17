@@ -98,6 +98,10 @@ function Show-Help {
     Write-Host '  .\run-custom-wezterm.ps1 -Build -ShowCmd        print, do not execute'
     Write-Host ''
     Write-Warn 'Notes:'
+    Write-Warn '  Without -Build the binary is looked up in CARGO_TARGET_DIR, target\, build\,'
+    Write-Warn '  any other target*\ or build*\ directory, then the target dir cargo reports;'
+    Write-Warn '  a release build is preferred, and a debug one is used only when there is no'
+    Write-Warn '  release build.'
     Write-Warn '  Windows locks a running exe, so -Build renames an in-use wezterm-gui.exe'
     Write-Warn '  aside to let the link succeed; open windows keep the old build until they'
     Write-Warn '  are restarted.'
@@ -125,11 +129,68 @@ $StrawberryBinDirs = @(
 $IsDevPc = [bool]($env:COMPUTERNAME -like '*devpc*')
 
 $RepoPath = [System.IO.Path]::GetFullPath($RepoPath)
-$ExePath = Join-Path $RepoPath 'target\release\wezterm-gui.exe'
+
+# cargo builds into <target dir>\release (or \debug). The target dir is
+# `target` unless CARGO_TARGET_DIR or a .cargo/config build.target-dir moves
+# it; `cargo metadata` knows the answer, at the cost of running cargo.
+function Get-CargoTargetDir {
+    if (Get-Command cargo -ErrorAction SilentlyContinue) {
+        $json = cargo metadata --format-version 1 --no-deps --manifest-path (Join-Path $RepoPath 'Cargo.toml') 2>$null | Out-String
+        if ($LASTEXITCODE -eq 0 -and $json -match '"target_directory":"((?:[^"\\]|\\.)*)"') {
+            return [regex]::Unescape($Matches[1])
+        }
+    }
+    if ($env:CARGO_TARGET_DIR) { return [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
+    return (Join-Path $RepoPath 'target')
+}
+
+# Directories that may hold a build, in the order they are searched:
+# CARGO_TARGET_DIR, target, build, then any other target* / build* directory
+function Get-TargetDirs {
+    $dirs = @()
+    if ($env:CARGO_TARGET_DIR) { $dirs += [System.IO.Path]::GetFullPath($env:CARGO_TARGET_DIR) }
+    $dirs += (Join-Path $RepoPath 'target'), (Join-Path $RepoPath 'build')
+    $dirs += @(Get-ChildItem -Path $RepoPath -Directory -ErrorAction SilentlyContinue |
+        Where-Object { $_.Name -like 'target*' -or $_.Name -like 'build*' } |
+        Sort-Object Name | ForEach-Object { $_.FullName })
+    $seen = @{}
+    return @($dirs | Where-Object { $k = $_.TrimEnd('\').ToLowerInvariant(); if ($seen[$k]) { $false } else { $seen[$k] = $true; $true } })
+}
+
+# The binary to launch: a release build from the first directory that has one,
+# else a debug build, else (cargo's own target dir may live elsewhere) the same
+# search in the directory cargo metadata reports; $null when there is none
+function Find-ExePath {
+    $dirs = @(Get-TargetDirs)
+    foreach ($round in 1, 2) {
+        foreach ($cargoProfile in @('release', 'debug')) {
+            foreach ($d in $dirs) {
+                $c = Join-Path $d "$cargoProfile\wezterm-gui.exe"
+                if (Test-Path $c) { return @{ Path = $c; Debug = ($cargoProfile -eq 'debug') } }
+            }
+        }
+        $dirs = @(Get-CargoTargetDir)
+    }
+    return $null
+}
+
+$DefaultExePath = Join-Path $RepoPath 'target\release\wezterm-gui.exe'
+$ExePath = $DefaultExePath
+$LaunchIsDebug = $false
+if ($Build) {
+    # Where this build's binary lands, which is also the one to move aside
+    $ExePath = Join-Path (Get-CargoTargetDir) 'release\wezterm-gui.exe'
+} else {
+    $found = Find-ExePath
+    if ($found) {
+        $ExePath = $found.Path
+        $LaunchIsDebug = $found.Debug
+    }
+}
 # Windows refuses to overwrite a running exe, so a rebuild while a custom
 # wezterm window is open fails at the link step. Renaming it aside is allowed
 # even while it runs, and the leftover is cleaned up on the next build.
-$LockedExePath = Join-Path $RepoPath 'target\release\wezterm-gui.locked-old.exe'
+$LockedExePath = Join-Path (Split-Path $ExePath -Parent) 'wezterm-gui.locked-old.exe'
 
 $weztermArgs = @('start')
 if ($Cwd) { $weztermArgs += @('--cwd', $Cwd) }
@@ -205,9 +266,19 @@ if ($Build) {
 }
 
 if (-not (Test-Path $ExePath)) {
-    Write-Err "Not built yet: $ExePath"
+    if ($Build) {
+        Write-Err "The build finished but its binary is missing: $ExePath"
+    } else {
+        Write-Err 'Not built yet: no wezterm-gui.exe in any release or debug build directory.'
+        Write-Warn ('Searched: ' + ((@(Get-TargetDirs) + @(Get-CargoTargetDir) | Select-Object -Unique) -join ', '))
+    }
     Write-Warn 'Run this script with -Build, or run cargo build --release yourself.'
     exit 1
+}
+if ($LaunchIsDebug) {
+    Write-Warn "No release build found; running a debug build, which is much slower: $ExePath"
+} elseif ($ExePath -ne $DefaultExePath) {
+    Write-InfoAlt "No target\release build; using the one found in $(Split-Path (Split-Path $ExePath -Parent) -Parent)."
 }
 
 $installed = 'C:\Program Files\WezTerm\wezterm-gui.exe'

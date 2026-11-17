@@ -83,6 +83,10 @@ USAGE
     color_warn 'Notes:'
     cat <<'USAGE'
   Options are matched case-insensitively.
+  Without --build the binary is looked up in CARGO_TARGET_DIR, target/, build/,
+  any other target*/ or build*/ directory, then the target dir cargo reports;
+  a release build is preferred, and a debug one is used only when there is no
+  release build.
   If the build fails on missing system libraries, run the checkout's get-deps.
   On machines whose name contains "devpc", --build also sets
     CARGO_HTTP_CHECK_REVOKE=false
@@ -117,7 +121,78 @@ REPO_PATH="$(cd -- "$REPO_PATH" 2>/dev/null && pwd)" || {
     color_err "No such directory: $REPO_PATH"
     exit 1
 }
-EXE_PATH="$REPO_PATH/target/release/wezterm-gui"
+# Under Git Bash the binary carries .exe; MSYS's test -x usually finds it
+# either way, but check both
+is_exe() { [ -x "$1" ] || [ -x "$1.exe" ]; }
+
+# cargo builds into <target dir>/release (or /debug). The target dir is
+# `target` unless CARGO_TARGET_DIR or a .cargo/config build.target-dir moves
+# it; `cargo metadata` knows the answer, at the cost of running cargo.
+cargo_target_dir() {
+    local json dir
+    if command -v cargo >/dev/null 2>&1; then
+        json="$(cargo metadata --format-version 1 --no-deps --manifest-path "$REPO_PATH/Cargo.toml" 2>/dev/null)"
+        dir="$(printf '%s' "$json" | sed -n 's/.*"target_directory":"\(\([^"\\]\|\\.\)*\)".*/\1/p' | sed 's/\\\\/\\/g')"
+        if [ -n "$dir" ]; then
+            # Git Bash reports a Windows path; make it one bash can use
+            command -v cygpath >/dev/null 2>&1 && dir="$(cygpath -u "$dir")"
+            printf '%s\n' "$dir"
+            return
+        fi
+    fi
+    if [ -n "${CARGO_TARGET_DIR:-}" ]; then
+        printf '%s\n' "$CARGO_TARGET_DIR"
+    else
+        printf '%s\n' "$REPO_PATH/target"
+    fi
+}
+
+# Directories that may hold a build, one per line, in the order they are
+# searched: CARGO_TARGET_DIR, target, build, then any other target* / build*
+list_target_dirs() {
+    local d
+    {
+        [ -n "${CARGO_TARGET_DIR:-}" ] && printf '%s\n' "$CARGO_TARGET_DIR"
+        printf '%s\n' "$REPO_PATH/target" "$REPO_PATH/build"
+        for d in "$REPO_PATH"/target*/ "$REPO_PATH"/build*/; do
+            [ -d "$d" ] && printf '%s\n' "${d%/}"
+        done
+    } | awk '!seen[$0]++'
+}
+
+# The binary to launch: a release build from the first directory that has one,
+# else a debug build, else (cargo's own target dir may live elsewhere) the same
+# search in the directory cargo metadata reports. Sets FOUND_EXE, FOUND_DEBUG.
+find_exe() {
+    local round dirs cargo_profile d
+    dirs="$(list_target_dirs)"
+    for round in 1 2; do
+        for cargo_profile in release debug; do
+            while IFS= read -r d; do
+                [ -n "$d" ] || continue
+                if is_exe "$d/$cargo_profile/wezterm-gui"; then
+                    FOUND_EXE="$d/$cargo_profile/wezterm-gui"
+                    FOUND_DEBUG=0
+                    [ "$cargo_profile" = debug ] && FOUND_DEBUG=1
+                    return 0
+                fi
+            done <<< "$dirs"
+        done
+        dirs="$(cargo_target_dir)"
+    done
+    return 1
+}
+
+DEFAULT_EXE_PATH="$REPO_PATH/target/release/wezterm-gui"
+EXE_PATH="$DEFAULT_EXE_PATH"
+LAUNCH_IS_DEBUG=0
+if [ "$BUILD" -eq 1 ]; then
+    # where this build's binary lands
+    EXE_PATH="$(cargo_target_dir)/release/wezterm-gui"
+elif find_exe; then
+    EXE_PATH="$FOUND_EXE"
+    LAUNCH_IS_DEBUG="$FOUND_DEBUG"
+fi
 
 # wezterm wants --config-file before the subcommand
 wezterm_args=()
@@ -159,10 +234,20 @@ if [ "$BUILD" -eq 1 ]; then
     color_ok 'Build finished.'
 fi
 
-if [ ! -x "$EXE_PATH" ]; then
-    color_err "Not built yet: $EXE_PATH"
+if ! is_exe "$EXE_PATH"; then
+    if [ "$BUILD" -eq 1 ]; then
+        color_err "The build finished but its binary is missing: $EXE_PATH"
+    else
+        color_err 'Not built yet: no wezterm-gui in any release or debug build directory.'
+        color_warn "Searched: $( { list_target_dirs; cargo_target_dir; } | awk '!seen[$0]++' | paste -sd, - | sed 's/,/, /g')"
+    fi
     color_warn 'Run this script with --build, or run cargo build --release yourself.'
     exit 1
+fi
+if [ "$LAUNCH_IS_DEBUG" -eq 1 ]; then
+    color_warn "No release build found; running a debug build, which is much slower: $EXE_PATH"
+elif [ "$EXE_PATH" != "$DEFAULT_EXE_PATH" ]; then
+    color_info_alt "No target/release build; using the one found in ${EXE_PATH%/release/wezterm-gui}."
 fi
 
 if [ -x "$INSTALLED_EXE" ]; then
